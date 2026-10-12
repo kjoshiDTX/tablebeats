@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TableBeats</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23ff4d8d'/%3E%3Crect x='6' y='6' width='9' height='9' rx='2' fill='%23fff'/%3E%3Crect x='17' y='17' width='9' height='9' rx='2' fill='%23fff'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>TableBeats</h1>
+  <span class="tag">tap your table, make music</span>
+  <div class="hdr-right">
+    <select id="cameraSel" title="Camera"><option value="">Default camera</option></select>
+    <button id="startBtn" class="primary">Start camera</button>
+  </div>
+</header>
+
+<main>
+  <section class="stage-col">
+    <div class="stage">
+      <canvas id="stage" width="960" height="540"></canvas>
+      <div id="stageMsg" class="stage-msg">
+        Press <b>Start camera</b>, then drag the four yellow corners onto your table.<br>
+        No camera yet? Click the pads or use the keys (shown in each pad's corner) to try sounds.
+      </div>
+    </div>
+
+    <div class="transport">
+      <button id="recBtn">● Record</button>
+      <button id="playBtn">▶ Play loop</button>
+      <button id="undoBtn" title="Remove the last recorded pass">Undo pass</button>
+      <button id="clearBtn">Clear</button>
+      <label class="inline">BPM <input id="bpm" type="range" min="60" max="180" value="100"><b id="bpmVal">100</b></label>
+      <label class="inline">Length
+        <select id="bars"><option value="1">1 bar</option><option value="2">2 bars</option><option value="4">4 bars</option><option value="8">8 bars</option></select>
+      </label>
+      <label class="inline"><input id="quant" type="checkbox"> Snap to beat</label>
+      <label class="inline"><input id="metro" type="checkbox"> Metronome</label>
+      <span id="loopStatus" class="status"></span>
+    </div>
+    <div class="pos"><div id="posFill"></div></div>
+
+    <div class="tl-head">
+      <h2>Timeline</h2>
+      <span class="hint">Every hit you record lands here. Click a cell to add or remove a hit; click a pad name to select it. Space = play/stop.</span>
+    </div>
+    <div class="tl-wrap"><canvas id="timeline" width="1200" height="200"></canvas></div>
+
+    <div class="sess">
+      <button id="sessBtn">⏺ Record session</button><span id="sessTime"></span>
+      <span class="hint">Saves everything you play (live + loop) to an audio file.</span>
+    </div>
+    <div id="takes"></div>
+  </section>
+
+  <aside>
+    <details open class="card">
+      <summary>Quick start</summary>
+      <ol class="steps">
+        <li>Press <b>Start camera</b> and point it at your table.</li>
+        <li>Drag the 4 yellow corners to outline the play area.</li>
+        <li>Pick a kit below, then tap the table (or click / use keys).</li>
+        <li>Hit <b>Record</b> (1-bar count-in), play, and watch it fill the timeline.</li>
+      </ol>
+      <p class="hint">Tip: set everything up with the screen open, then tilt the lid down. Your corners and pads are saved.</p>
+    </details>
+
+    <section class="card">
+      <h3>Kit</h3>
+      <label>Preset <select id="presetSel"></select></label>
+      <div class="row2">
+        <label>Key <select id="keySel"></select></label>
+        <label>Scale <select id="scaleSel"></select></label>
+      </div>
+      <button id="loadPresetBtn">Load kit</button>
+      <p class="hint">Melodic kits stay in the chosen scale, so any pad you hit sounds good together.</p>
+    </section>
+
+    <section class="card">
+      <h3>Sound library <small>(hip hop, house, anything)</small></h3>
+      <div class="row2">
+        <label class="btn">Add sounds… <input id="libFiles" type="file" accept="audio/*,.wav,.mp3,.ogg,.flac,.aif,.aiff,.m4a" multiple hidden></label>
+        <label class="btn">Add folder… <input id="libFolder" type="file" webkitdirectory multiple hidden></label>
+      </div>
+      <input id="libSearch" type="search" placeholder="Search your sounds (kick, snare, 808…)">
+      <div id="libList" class="lib"></div>
+      <div class="row2">
+        <button id="libAssign">Assign to selected pad</button>
+        <button id="libFill">Fill pads from list</button>
+      </div>
+      <button id="libClear" class="danger">Remove all library sounds</button>
+      <p class="hint" id="libNote">Click a sound to hear it. Your library is saved in this browser.</p>
+      <details class="packs">
+        <summary>Where to get free, royalty-free packs</summary>
+        <ul>
+          <li><b>Hip hop / trap</b> (SampleRadar, royalty-free, no attribution):
+            <a href="https://www.musicradar.com/news/sampleradar-488-free-hip-hop-essentials-samples" target="_blank" rel="noopener">Hip-hop essentials</a>,
+            <a href="https://www.musicradar.com/music-tech/samples/want-to-recreate-the-classic-sound-of-golden-age-90s-hip-hop-download-this-pack-of-537-free-samples-from-sampleradar" target="_blank" rel="noopener">'90s hip-hop</a>,
+            <a href="https://www.musicradar.com/news/tech/sampleradar-316-free-hip-hop-samples-248617" target="_blank" rel="noopener">Hip-hop 316</a>,
+            <a href="https://www.musicradar.com/news/tech/sampleradar-627140" target="_blank" rel="noopener">Trap</a>,
+            <a href="https://www.musicradar.com/news/sampleradar-378-free-808-drum-samples" target="_blank" rel="noopener">808 drums</a>,
+            <a href="https://www.musicradar.com/news/sampleradar-808-weight-samples-1" target="_blank" rel="noopener">808 weight</a></li>
+          <li><b>House</b> (SampleRadar):
+            <a href="https://www.musicradar.com/music-tech/samples/sampleradar-267-free-deep-house-samples" target="_blank" rel="noopener">Deep house</a></li>
+          <li><b>Drums &amp; bass</b> (99Sounds, 100% royalty-free):
+            <a href="https://99sounds.org/drum-samples/" target="_blank" rel="noopener">Drum samples</a>,
+            <a href="https://99sounds.org/kick-drum/" target="_blank" rel="noopener">Kick drums</a>,
+            <a href="https://99sounds.org/bass-city/" target="_blank" rel="noopener">Bass City</a></li>
+          <li><b>CC0 / public domain</b>: <a href="https://freesound.org/browse/tags/cc0" target="_blank" rel="noopener">Freesound (CC0 tag)</a>, free account needed; only CC0 needs no credit.</li>
+        </ul>
+        <p class="hint">Download a pack, unzip it, then use <b>Add folder…</b>. Don't re-share the packs themselves.</p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h3 id="padTitle">Pad</h3>
+      <label>Name <input id="padLabel" type="text" maxlength="14"></label>
+      <label>Sound <select id="padSound"></select></label>
+      <label id="noteRow" hidden>Note <select id="padNote"></select></label>
+      <label>Volume <input id="padVol" type="range" min="0" max="1" step="0.01"></label>
+      <button id="padPreview">Preview</button>
+    </section>
+
+    <section class="card">
+      <h3>Table &amp; camera</h3>
+      <div class="row2">
+        <label>Rows <input id="rowsIn" type="number" min="1" max="4"></label>
+        <label>Columns <input id="colsIn" type="number" min="1" max="6"></label>
+      </div>
+      <label class="inline"><input id="flipX" type="checkbox"> Mirror left/right</label>
+      <label class="inline"><input id="flipY" type="checkbox"> Flip upside down</label>
+      <label class="inline"><input id="lockGrid" type="checkbox"> Lock grid (hide corners)</label>
+      <button id="resetCorners">Reset corners</button>
+    </section>
+
+    <section class="card">
+      <h3>How taps are detected</h3>
+      <label class="inline"><input type="radio" name="mode" id="modeKnock"> Tap <small>(recommended)</small>: the mic hears each tap, the camera sees which pad your fingertip is on</label>
+      <label class="inline"><input type="radio" name="mode" id="modeMotion"> Camera only: no mic, less precise</label>
+      <p class="hint">The white ring follows your fingertip. That's the spot a tap will land on. Your hand can stay over a pad and tap again and again.</p>
+      <label>Sensitivity <input id="sens" type="range" min="1" max="10" step="1"></label>
+      <div id="micRow" hidden>
+        <div class="meter"><div id="micMeter"></div></div>
+        <p class="hint" id="micNote">Tap mode starts listening when the camera starts. It learns to ignore its own sound from the speakers; headphones work best.</p>
+      </div>
+      <label class="inline"><input id="debug" type="checkbox"> Show detection details</label>
+      <button id="resetBg">Relearn background</button>
+    </section>
+
+    <section class="card">
+      <h3>Mix</h3>
+      <label>Master <input id="master" type="range" min="0" max="1" step="0.01"></label>
+      <label>Reverb <input id="reverb" type="range" min="0" max="0.6" step="0.01"></label>
+    </section>
+  </aside>
+</main>
+
+<video id="video" playsinline muted style="position:absolute;width:2px;height:2px;opacity:0;pointer-events:none"></video>
+<script src="js/core.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/vision.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -145,6 +145,14 @@
         <div class="meter"><div id="micMeter"></div></div>
         <p class="hint" id="micNote">Tap mode starts listening when the camera starts. It learns to ignore its own sound from the speakers; headphones work best.</p>
       </div>
+      <label>Vision runs on
+        <select id="backendSel">
+          <option value="auto">Auto (GPU if available)</option>
+          <option value="gpu">GPU (WebGL shaders)</option>
+          <option value="cpu">CPU (JavaScript)</option>
+        </select>
+      </label>
+      <p class="hint" id="backendInfo"></p>
       <label class="inline"><input id="debug" type="checkbox"> Show detection details</label>
       <button id="resetBg">Relearn background</button>
     </section>
@@ -161,6 +169,9 @@
 <script src="js/core.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/vision.js"></script>
+<script src="js/perf.js"></script>
+<script src="js/gpu.js"></script>
+<script src="js/pipeline.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

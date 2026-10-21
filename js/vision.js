@@ -12,9 +12,86 @@
 (function (root) {
   'use strict';
 
-  function createTracker(w, h) {
+  /* Background subtraction on the CPU (the reference implementation; js/gpu.js does the same in a
+     WebGL fragment shader). A backend owns the background model and turns a frame into
+     fg0 (raw foreground), fg (denoised foreground) and curY (luminance). */
+  function cpuBackend(w, h) {
     const N = w * h;
     const bgR = new Float32Array(N), bgG = new Float32Array(N), bgB = new Float32Array(N);
+    return {
+      name: 'cpu', w, h,
+      init(d) {
+        for (let i = 0, p = 0; i < N; i++, p += 4) { bgR[i] = d[p]; bgG[i] = d[p + 1]; bgB[i] = d[p + 2]; }
+      },
+      // carry the background over from a backend at another resolution (nearest neighbour)
+      seed(prev) {
+        const src = prev.bgRGB && prev.bgRGB();
+        if (!src) return false;
+        for (let y = 0; y < h; y++) {
+          const sy = Math.min(prev.h - 1, Math.floor((y + 0.5) * prev.h / h));
+          for (let x = 0; x < w; x++) {
+            const j = sy * prev.w + Math.min(prev.w - 1, Math.floor((x + 0.5) * prev.w / w)), i = y * w + x;
+            bgR[i] = src[0][j]; bgG[i] = src[1][j]; bgB[i] = src[2][j];
+          }
+        }
+        return true;
+      },
+      bgRGB() { return [bgR, bgG, bgB]; },
+      /* thr: luminance difference that counts as "something is there". Returns the fg0 pixel count. */
+      classify(d, thr, fg0, fg, curY) {
+        let fgCount = 0;
+        for (let i = 0, p = 0; i < N; i++, p += 4) {
+          const r = d[p], g = d[p + 1], b = d[p + 2];
+          const y = r * 0.3 + g * 0.59 + b * 0.11;
+          curY[i] = y;
+          const br = bgR[i], bgg = bgG[i], bb = bgB[i];
+          const by = br * 0.3 + bgg * 0.59 + bb * 0.11;
+          const dy = y - by;
+          let on = 0;
+          if (Math.abs(dy) > thr || Math.abs(r - br) + Math.abs(g - bgg) + Math.abs(b - bb) > thr * 2.4) {
+            on = 1;
+            const ratio = y / (by + 1);
+            if (dy < 0 && ratio > 0.4 && ratio < 0.95) { // darker: shadow if the colour is unchanged
+              const s = r + g + b + 1, bs = br + bgg + bb + 1;
+              if (Math.abs(r / s - br / bs) + Math.abs(g / s - bgg / bs) < 0.045) on = 0;
+            }
+          }
+          fg0[i] = on; fgCount += on;
+        }
+        // denoise: keep a pixel only if at least 2 of its 4 neighbours agree
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = y * w + x;
+            if (!fg0[i]) { fg[i] = 0; continue; }
+            const n = (x > 0 ? fg0[i - 1] : 1) + (x < w - 1 ? fg0[i + 1] : 1) + (y > 0 ? fg0[i - w] : 1) + (y < h - 1 ? fg0[i + w] : 1);
+            fg[i] = n >= 2 ? 1 : 0;
+          }
+        }
+        return fgCount;
+      },
+      /* background learning. Pixels on or next to a hand blob (label > 0) learn at `slow`,
+         everything else at `fast`. */
+      learn(d, label, fg0, fast, slow) {
+        for (let i = 0, p = 0; i < N; i++, p += 4) {
+          const near = label[i] > 0 || fg0[i] || (i > 0 && label[i - 1] > 0) || (i < N - 1 && label[i + 1] > 0) || (i >= w && label[i - w] > 0) || (i < N - w && label[i + w] > 0);
+          const rate = near ? slow : fast;
+          bgR[i] += (d[p] - bgR[i]) * rate; bgG[i] += (d[p + 1] - bgG[i]) * rate; bgB[i] += (d[p + 2] - bgB[i]) * rate;
+        }
+      },
+    };
+  }
+
+  const NOPROF = { start() {}, end() {} };
+
+  /* opts.backend: a background-subtraction backend for (w, h) (default: CPU).
+     opts.prof: { start(name), end(name) } stage timer (js/perf.js).
+     opts.seed: a previous tracker (other resolution) to inherit the background model from, so
+     switching resolution doesn't relearn a hand that is in view as background. */
+  function createTracker(w, h, opts) {
+    opts = opts || {};
+    const N = w * h;
+    const be = opts.backend || cpuBackend(w, h);
+    const prof = opts.prof || NOPROF;
     const curY = new Float32Array(N), prevY = new Float32Array(N); // prevY = frame ~33 ms ago
     const TICK = 28; // activity is measured over >= this many ms, so 30 and 60 fps cameras behave alike
     const fg0 = new Uint8Array(N), fg = new Uint8Array(N);
@@ -24,8 +101,14 @@
     let ready = false, frames = 0, nextId = 1, refT = 0, lastT = 0;
     let entryX = w / 2, entryY = h; // where arms usually come from; learned from blobs touching the edge
     let tracks = [];
+    let seeded = false;
+    if (opts.seed && be.seed(opts.seed.backend)) {
+      const s = opts.seed;
+      seeded = true; frames = s.frames; nextId = s.nextId;
+      entryX = s.entry[0] * w / s.w; entryY = s.entry[1] * h / s.h;
+    }
 
-    function reset() { ready = false; frames = 0; tracks = []; }
+    function reset() { ready = false; seeded = false; frames = 0; tracks = []; }
 
     /* d: RGBA pixels (w*h*4). o: { toGrid(xn,yn)->[u,v], rows, cols, sens (1..10) }.
        Returns { tips: tracks, strikes: [track...], relearned } */
@@ -33,49 +116,24 @@
       const sens = o.sens || 6;
       const thr = 34 - 2 * sens; // luminance difference that counts as "something is there"
       if (!ready) {
-        for (let i = 0, p = 0; i < N; i++, p += 4) {
-          bgR[i] = d[p]; bgG[i] = d[p + 1]; bgB[i] = d[p + 2];
-          curY[i] = prevY[i] = d[p] * 0.3 + d[p + 1] * 0.59 + d[p + 2] * 0.11;
-        }
-        ready = true; frames = 0; tracks = []; refT = lastT = now;
+        if (!seeded) be.init(d);
+        seeded = false;
+        be.classify(d, thr, fg0, fg, curY);
+        prevY.set(curY);
+        ready = true; tracks = []; refT = lastT = now;
         return { tips: tracks, strikes: [], relearned: true };
       }
       frames++;
       const tick = now - refT >= TICK;
       const dt = Math.min(200, Math.max(1, now - lastT)); lastT = now;
       if (tick) { refT = now; prevY.set(curY); }
-      let fgCount = 0;
-      for (let i = 0, p = 0; i < N; i++, p += 4) {
-        const r = d[p], g = d[p + 1], b = d[p + 2];
-        const y = r * 0.3 + g * 0.59 + b * 0.11;
-        curY[i] = y;
-        const br = bgR[i], bgg = bgG[i], bb = bgB[i];
-        const by = br * 0.3 + bgg * 0.59 + bb * 0.11;
-        const dy = y - by;
-        let on = 0;
-        if (Math.abs(dy) > thr || Math.abs(r - br) + Math.abs(g - bgg) + Math.abs(b - bb) > thr * 2.4) {
-          on = 1;
-          const ratio = y / (by + 1);
-          if (dy < 0 && ratio > 0.4 && ratio < 0.95) { // darker: shadow if the colour is unchanged
-            const s = r + g + b + 1, bs = br + bgg + bb + 1;
-            if (Math.abs(r / s - br / bs) + Math.abs(g / s - bgg / bs) < 0.045) on = 0;
-          }
-        }
-        fg0[i] = on; fgCount += on;
-      }
+      prof.start('bgsub');
+      const fgCount = be.classify(d, thr, fg0, fg, curY);
+      prof.end('bgsub');
       // lighting change or camera bumped: most of the frame "changed" -> relearn the background
-      if (fgCount > N * 0.55) { ready = false; return process(d, now, o); }
+      if (fgCount > N * 0.55) { ready = false; frames = 0; return process(d, now, o); }
 
-      // denoise: keep a pixel only if at least 2 of its 4 neighbours agree
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const i = y * w + x;
-          if (!fg0[i]) { fg[i] = 0; continue; }
-          const n = (x > 0 ? fg0[i - 1] : 1) + (x < w - 1 ? fg0[i + 1] : 1) + (y > 0 ? fg0[i - w] : 1) + (y < h - 1 ? fg0[i + w] : 1);
-          fg[i] = n >= 2 ? 1 : 0;
-        }
-      }
-
+      prof.start('blobs');
       // connected blobs (4-connectivity), pixel lists stored back to back in `pix`
       label.fill(0);
       const blobs = [];
@@ -99,14 +157,13 @@
         if (area < MIN_AREA) { for (let k = start; k < top; k++) label[pix[k]] = -1; top = start; continue; } // too small to be a hand
         blobs.push({ start, end: top, area, bx, by: by2, bn });
       }
+      prof.end('blobs');
       // background learning (time based, so frame rate doesn't matter). Hands, and a 1px ring around
       // them, learn very slowly (~20 s); everything else adapts in about a second.
-      const fast = 1 - Math.exp(-dt / 800), slow = 1 - Math.exp(-dt / 20000);
-      for (let i = 0, p = 0; i < N; i++, p += 4) {
-        const near = label[i] > 0 || fg0[i] || (i > 0 && label[i - 1] > 0) || (i < N - 1 && label[i + 1] > 0) || (i >= w && label[i - w] > 0) || (i < N - w && label[i + w] > 0);
-        const rate = near ? slow : fast;
-        bgR[i] += (d[p] - bgR[i]) * rate; bgG[i] += (d[p + 1] - bgG[i]) * rate; bgB[i] += (d[p + 2] - bgB[i]) * rate;
-      }
+      prof.start('learn');
+      be.learn(d, label, fg0, 1 - Math.exp(-dt / 800), 1 - Math.exp(-dt / 20000));
+      prof.end('learn');
+      prof.start('track');
       blobs.sort((a, b) => b.area - a.area);
       blobs.length = Math.min(blobs.length, MAX_TIPS);
 
@@ -182,6 +239,7 @@
           if (len >= 1 && len <= 2 && peak >= hi && travel2 < w * 0.06) { t.strike = true; t.lastStrike = now; strikes.push(t); }
         }
       }
+      prof.end('track');
       return { tips: tracks, strikes, relearned: false };
     }
 
@@ -198,10 +256,11 @@
       return best;
     }
 
-    return { process, reset, strikingTip, get tracks() { return tracks; }, get ready() { return ready; } };
+    return { process, reset, strikingTip, w, h, backend: be, get tracks() { return tracks; }, get ready() { return ready; },
+      get frames() { return frames; }, get nextId() { return nextId; }, get entry() { return [entryX, entryY]; } };
   }
 
-  const api = { createTracker };
+  const api = { createTracker, cpuBackend };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else { root.TB = root.TB || {}; root.TB.vision = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

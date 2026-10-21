@@ -1,0 +1,12 @@
+{
+  "name": "tablebeats",
+  "private": true,
+  "description": "Tap your table, make music. The app itself needs no build; these scripts are for benchmarking and tracing.",
+  "scripts": {
+    "bench": "node tools/bench/run.mjs",
+    "test": "node tools/test-vision.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^23.11.1"
+  }
+}

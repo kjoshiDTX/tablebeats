@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TableBeats vision benchmark</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  .bench{max-width:980px;margin:0 auto;padding:16px 18px}
+  .bench canvas,.bench video{width:100%;max-width:480px;border-radius:8px;border:1px solid var(--line);display:block}
+  .bench .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin:12px 0}
+  .bench .row button{width:auto;margin:0}
+  .bench table{border-collapse:collapse;width:100%;margin-top:12px;font-variant-numeric:tabular-nums}
+  .bench th,.bench td{border-bottom:1px solid var(--line);padding:5px 8px;text-align:right}
+  .bench th:first-child,.bench td:first-child{text-align:left}
+</style>
+</head>
+<body>
+<header><h1>TableBeats</h1><span class="tag">vision benchmark: CPU vs GPU</span></header>
+<div class="bench">
+  <p class="hint">A synthetic camera feed (two arms tapping on a textured table, with shadows and sensor noise) is
+    streamed into a &lt;video&gt; element and run through the same pipeline as the app. URL options:
+    <code>?backend=cpu|gpu|gpu-async</code>, <code>frames=600</code>, <code>run</code> (start immediately).</p>
+  <div class="row">
+    <button id="runBtn" class="primary">Run CPU, GPU, GPU (async readback)</button>
+    <label class="inline">Frames <input id="framesIn" type="number" value="600" min="60" step="60" style="width:90px"></label>
+    <span id="status" class="status"></span>
+  </div>
+  <canvas id="scene" width="1280" height="720"></canvas>
+  <table id="results"><thead><tr><th>backend</th><th>renderer</th><th>stage</th><th>mean ms</th><th>p50</th><th>p95</th><th>max</th></tr></thead><tbody></tbody></table>
+</div>
+<video id="video" playsinline muted style="position:absolute;width:2px;height:2px;opacity:0;pointer-events:none"></video>
+<script src="js/core.js"></script>
+<script src="js/vision.js"></script>
+<script src="js/perf.js"></script>
+<script src="js/gpu.js"></script>
+<script src="js/pipeline.js"></script>
+<script src="js/bench.js"></script>
+</body>
+</html>

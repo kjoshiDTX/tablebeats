@@ -5,7 +5,7 @@
    - Camera only: the tracker fires when a fingertip makes a short, sharp strike (js/vision.js). */
 (function () {
   'use strict';
-  const { core, Engine, SOUNDS, vision: V } = window.TB;
+  const { core, Engine, SOUNDS, pipeline, perf } = window.TB;
   const $ = (id) => document.getElementById(id);
   const engine = new Engine();
 
@@ -17,7 +17,7 @@
     return {
       rows: pre.rows, cols: pre.cols, pads: pre.pads,
       corners: DEFAULT_CORNERS.map((c) => ({ ...c })),
-      flipX: false, flipY: false, locked: false, mode: 'knock', detectV: 2, sens: 6, debug: false,
+      flipX: false, flipY: false, locked: false, mode: 'knock', detectV: 2, sens: 6, debug: false, backend: 'auto',
       bpm: 100, bars: 2, quant: true, metro: true,
       keyRoot: 9, scale: 'Minor pentatonic', preset: 'Mini DJ set', reverb: 0.18, master: 0.9,
     };
@@ -46,7 +46,6 @@
   const W = 960, H = 540, PW = 256, PH = 144;
   let Mn, toGrid, quads = [];
   const pv = []; // per-pad display state
-  const tracker = V.createTracker(PW, PH);
   function rebuildGeom() {
     Mn = core.squareToQuad(S.corners);
     toGrid = core.invertMap(Mn);
@@ -78,8 +77,9 @@
   /* ================= camera + vision ================= */
   const video = $('video');
   const stage = $('stage'), sctx = stage.getContext('2d');
-  const pcv = document.createElement('canvas'); pcv.width = PW; pcv.height = PH;
-  const pctx = pcv.getContext('2d', { willReadFrequently: true });
+  // vision runs on the GPU (WebGL shaders) when it can, else on the CPU; see js/pipeline.js
+  const pipe = pipeline.create({ video, w: PW, h: PH, backend: S.backend, readback: /[?&]readback=async\b/.test(location.search) ? 'async' : 'sync' });
+  perf.trace = S.debug || /[?&]trace\b/.test(location.search); // stage timings as User Timing (Perfetto)
   let camOn = false, stream = null;
 
   async function startCamera(deviceId) {
@@ -98,7 +98,7 @@
       catch (err) { stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
       video.srcObject = stream;
       await video.play();
-      camOn = true; tracker.reset();
+      camOn = true; pipe.reset();
       if (S.mode === 'knock') enableMic();
       $('stageMsg').hidden = true;
       $('startBtn').textContent = 'Restart camera';
@@ -132,15 +132,9 @@
   function vision() {
     if (video.readyState < 2) return;
     const t0 = performance.now();
-    pctx.save();
-    if (S.flipX) { pctx.translate(PW, 0); pctx.scale(-1, 1); }
-    if (S.flipY) { pctx.translate(0, PH); pctx.scale(1, -1); }
-    pctx.drawImage(video, 0, 0, PW, PH);
-    pctx.restore();
-    const d = pctx.getImageData(0, 0, PW, PH).data;
-    const res = tracker.process(d, t0, { toGrid, rows: S.rows, cols: S.cols, sens: S.sens });
+    const res = pipe.frame(t0, { toGrid, rows: S.rows, cols: S.cols, sens: S.sens }, S.flipX, S.flipY);
     if (S.mode === 'motion') for (const t of res.strikes) { hit(t.pad); lastTapMark = { x: t.x, y: t.y, t: t0 }; }
-    visMs = visMs * 0.9 + (performance.now() - t0) * 0.1;
+    visMs = visMs * 0.9 + res.ms * 0.1;
   }
 
   /* ================= tap (microphone) detection =================
@@ -186,7 +180,7 @@
     if (peak < floor * 2 + 0.02) floor = floor * 0.995 + peak * 0.005;
     const prevEnv = micEnv;
     micEnv = Math.max(peak, micEnv * 0.85);
-    const moving = tracker.strikingTip(now, 300);
+    const moving = pipe.tracker.strikingTip(now, 300);
     // hands still but the mic hears our sound: that's pure speaker echo, learn its level
     if (!moving && outHold > 0.01) echoGain = Math.max(echoGain * 0.9997, Math.min(4, peak / outHold));
     else echoGain *= 0.99995;
@@ -195,7 +189,7 @@
     // a tap = sudden rise (not a sustained sound), above the noise floor and above the speaker echo
     if (peak > thr && peak > prevEnv * 1.8 && peak > echoGain * outHold * 1.5 && now - lastKnock > 60) {
       lastKnock = now;
-      const tip = tracker.strikingTip(now, 220);
+      const tip = pipe.tracker.strikingTip(now, 220);
       if (tip) { hit(tip.pad); lastTapMark = { x: tip.x, y: tip.y, t: now }; }
     }
   }
@@ -327,7 +321,7 @@
       sctx.fillStyle = g; sctx.fillRect(0, 0, W, H);
     }
     const n = quads.length;
-    const tips = camOn ? tracker.tracks : [];
+    const tips = camOn ? pipe.tracker.tracks : [];
     const tipPads = new Set(tips.map((t) => t.pad).filter((p) => p >= 0));
     sctx.lineJoin = 'round';
     for (let i = 0; i < n; i++) {
@@ -376,9 +370,16 @@
     }
     if (S.debug && camOn) {
       sctx.font = '12px ui-monospace, monospace'; sctx.textAlign = 'left'; sctx.textBaseline = 'bottom';
-      const info = `vision ${visMs.toFixed(1)} ms · tips ${tips.length}` + (micOn ? ` · echo ${echoGain.toFixed(2)}` : '');
-      sctx.fillStyle = 'rgba(0,0,0,.6)'; sctx.fillRect(6, H - 24, sctx.measureText(info).width + 12, 18);
-      sctx.fillStyle = '#fff'; sctx.fillText(info, 12, H - 9);
+      const st = (k) => { const v = perf.stats(k); return v ? `${k} ${v.p50.toFixed(2)}/${v.p95.toFixed(2)}` : ''; };
+      const lines = [
+        `vision ${visMs.toFixed(1)} ms on ${pipe.backend.toUpperCase()} · tips ${tips.length}` + (micOn ? ` · echo ${echoGain.toFixed(2)}` : ''),
+        'p50/p95 ms: ' + ['vision', 'capture', 'bgsub', 'blobs', 'learn', 'track'].map(st).filter(Boolean).join(' · '),
+      ];
+      lines.forEach((info, k) => {
+        const y = H - 9 - (lines.length - 1 - k) * 20;
+        sctx.fillStyle = 'rgba(0,0,0,.6)'; sctx.fillRect(6, y - 15, sctx.measureText(info).width + 12, 18);
+        sctx.fillStyle = '#fff'; sctx.fillText(info, 12, y);
+      });
     }
     if (!S.locked) {
       S.corners.forEach((c, k) => {
@@ -622,7 +623,8 @@
     $('rowsIn').value = S.rows; $('colsIn').value = S.cols;
     $('flipX').checked = S.flipX; $('flipY').checked = S.flipY; $('lockGrid').checked = S.locked;
     $('modeMotion').checked = S.mode === 'motion'; $('modeKnock').checked = S.mode === 'knock';
-    $('sens').value = S.sens; $('debug').checked = S.debug;
+    $('sens').value = S.sens; $('debug').checked = S.debug; $('backendSel').value = S.backend;
+    $('backendInfo').textContent = 'Running on: ' + pipe.renderer;
     $('micRow').hidden = S.mode !== 'knock';
     $('bpm').value = S.bpm; $('bpmVal').textContent = S.bpm; $('bars').value = S.bars;
     $('quant').checked = S.quant; $('metro').checked = S.metro;
@@ -654,15 +656,16 @@
     rebuildGeom(); rebuildKeys(); syncUI(); save();
   }
   on('rowsIn', 'change', resizeGrid); on('colsIn', 'change', resizeGrid);
-  on('flipX', 'change', () => { S.flipX = $('flipX').checked; tracker.reset(); save(); });
-  on('flipY', 'change', () => { S.flipY = $('flipY').checked; tracker.reset(); save(); });
+  on('flipX', 'change', () => { S.flipX = $('flipX').checked; pipe.reset(); save(); });
+  on('flipY', 'change', () => { S.flipY = $('flipY').checked; pipe.reset(); save(); });
   on('lockGrid', 'change', () => { S.locked = $('lockGrid').checked; save(); });
   on('resetCorners', 'click', () => { S.corners = DEFAULT_CORNERS.map((c) => ({ ...c })); rebuildGeom(); save(); });
   const setMode = (m) => { S.mode = m; $('micRow').hidden = m !== 'knock'; if (m === 'knock') enableMic(); else disableMic(); save(); };
   on('modeMotion', 'change', () => setMode('motion')); on('modeKnock', 'change', () => setMode('knock'));
   on('sens', 'input', () => { S.sens = +$('sens').value; save(); });
-  on('debug', 'change', () => { S.debug = $('debug').checked; save(); });
-  on('resetBg', 'click', () => tracker.reset());
+  on('debug', 'change', () => { S.debug = $('debug').checked; perf.trace = S.debug; save(); });
+  on('backendSel', 'change', () => { S.backend = $('backendSel').value; pipe.setBackend(S.backend); syncUI(); save(); });
+  on('resetBg', 'click', () => pipe.reset());
 
   on('padLabel', 'input', () => { S.pads[sel].label = $('padLabel').value; save(); });
   on('padSound', 'change', () => {
@@ -686,5 +689,5 @@
   bindLibrary(); initLibrary();
   // Tap mode's mic starts together with the camera (Start camera is the user gesture)
   requestAnimationFrame(frame);
-  window.TableBeats = { S, hit, engine, T, pv, rebuildGeom, tracker, get echoGain() { return echoGain; }, get visMs() { return visMs; } }; // handy for debugging in the console
+  window.TableBeats = { S, hit, engine, T, pv, rebuildGeom, pipe, get tracker() { return pipe.tracker; }, get echoGain() { return echoGain; }, get visMs() { return visMs; } }; // handy for debugging in the console
 })();

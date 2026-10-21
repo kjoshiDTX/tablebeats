@@ -52,7 +52,10 @@
     sx.lineWidth = 26; sx.beginPath(); sx.moveTo(x, y + 40); sx.lineTo(x, y); sx.stroke(); // finger
     sx.restore();
   }
+  // ?cam=640: a lower-resolution synthetic camera (default 1280x720)
+  if (q.get('cam')) { scene.width = +q.get('cam'); scene.height = scene.width * 9 / 16; }
   function drawScene(k) {
+    sx.setTransform(scene.width / SW, 0, 0, scene.height / SH, 0, 0); // draw in 1280x720 units
     sx.drawImage(table, 0, 0);
     sx.globalCompositeOperation = 'overlay'; sx.drawImage(noise[k % 4], 0, 0, SW, SH); sx.globalCompositeOperation = 'source-over';
     if (k > 20) {
@@ -82,30 +85,40 @@
     await startVideo();
     perf.trace = true;
     const [be, readback] = backend.split('-'); // cpu | gpu | gpu-async
-    const pipe = pipeline.create({ video, w: PW, h: PH, backend: be, readback });
+    // ?adaptive[&budget=8]: graceful degradation on (js/quality.js)
+    const adaptive = q.has('adaptive') && q.get('adaptive') !== '0' && { budgetMs: +q.get('budget') || 8 };
+    const pipe = pipeline.create({ video, w: PW, h: PH, backend: be, readback, adaptive });
+    const warmup = adaptive ? 4 * WARMUP : WARMUP; // let the governor settle (30 frames per step)
     const samples = {}; STAGES.forEach((s) => (samples[s] = []));
+    const perFrame = [], levels = {}; // vision ms per camera frame (0 when skipped); frames per quality level
     const rec = perf.record;
-    let k = 0, measuring = false, tips = 0, strikes = 0;
+    let k = 0, measuring = false, tips = 0, strikes = 0, processed = 0;
     perf.record = (name, ms) => { rec(name, ms); if (measuring && samples[name]) samples[name].push(ms); };
     $('status').textContent = `${backend.toUpperCase()}: running…`;
     performance.mark('bench:' + backend + ':start');
     await new Promise((done) => {
       const step = () => {
         drawScene(k);
-        measuring = k >= WARMUP;
-        if (k === WARMUP) performance.mark('bench:measure'); // tools/trace/stages.py starts here
+        measuring = k >= warmup;
+        if (k === warmup) performance.mark('bench:measure'); // tools/trace/stages.py starts here
+        const lv = `${pipe.w}x${pipe.h}` + (pipe.quality && pipe.quality.every > 1 ? '/2' : '');
         const res = pipe.frame(performance.now(), opts, false, false);
-        if (measuring) { tips += res.tips.length; strikes += res.strikes.length; }
+        if (measuring) {
+          perFrame.push(res ? res.ms : 0); levels[lv] = (levels[lv] || 0) + 1;
+          if (res) { processed++; tips += res.tips.length; strikes += res.strikes.length; }
+        }
         k++;
-        if (k >= WARMUP + frames) return done();
+        if (k >= warmup + frames) return done();
         requestAnimationFrame(step);
       };
       requestAnimationFrame(step); // one frame per display frame (requestVideoFrameCallback never fires headless)
     });
     performance.mark('bench:' + backend + ':end');
     perf.record = rec;
-    const out = { backend: pipe.backend, renderer: pipe.renderer, frames, tips, strikes, stages: {} };
-    if (pipe.tracker.backend.readback === 'async') out.extra = `blocked on ${pipe.tracker.backend.blocked} of ${WARMUP + frames} frames`;
+    const out = { backend: pipe.backend, renderer: pipe.renderer, frames, processed, tips, strikes, adaptive: !!adaptive, levels,
+      perFrame: summarize(perFrame), stages: {} };
+    if (pipe.tracker.backend.readback === 'async') out.extra = `blocked on ${pipe.tracker.backend.blocked} of ${warmup + frames} frames`;
+    if (adaptive) out.extra = 'adaptive: ' + Object.entries(levels).map(([l, n]) => `${l} ${Math.round(100 * n / frames)}%`).join(', ');
     STAGES.forEach((s) => { if (samples[s].length) out.stages[s] = summarize(samples[s]); });
     show(out);
     return out;

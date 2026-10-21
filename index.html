@@ -153,6 +153,7 @@
         </select>
       </label>
       <p class="hint" id="backendInfo"></p>
+      <label class="inline"><input id="adaptive" type="checkbox"> Adapt to slow devices <small>(lower camera detail, then skip frames, when vision runs over 8 ms)</small></label>
       <label class="inline"><input id="debug" type="checkbox"> Show detection details</label>
       <button id="resetBg">Relearn background</button>
     </section>
@@ -170,6 +171,7 @@
 <script src="js/audio.js"></script>
 <script src="js/vision.js"></script>
 <script src="js/perf.js"></script>
+<script src="js/quality.js"></script>
 <script src="js/gpu.js"></script>
 <script src="js/pipeline.js"></script>
 <script src="js/app.js"></script>

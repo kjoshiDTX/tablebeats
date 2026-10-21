@@ -71,3 +71,29 @@ npm test                                 # tracker tests (node, no browser)
 Open any `bench-out/trace-*.json` in https://ui.perfetto.dev: the stages are `tb:*` slices on the
 renderer main thread; the GPU process's `CrGpuMain` thread shows what a readback waited on.
 Or open http://localhost:8123/bench.html and press Run.
+
+## Graceful degradation on slow devices
+
+With *Adapt to slow devices* on (default), a governor (js/quality.js) watches the p95 vision
+time over 30-frame windows. When it's over budget (8 ms, half a 60 Hz frame) it steps down a
+ladder: processing resolution 256x144 -> 192x108 -> 160x90 -> 128x72, then processing every
+other camera frame. The background model is resampled to the new size, so a hand in view is not
+relearned as background. It steps back up only when the level above is predicted to fit under
+70% of the budget for 90 frames straight, so it doesn't flap. The debug overlay shows the level.
+
+Not on the ladder: camera resolution. Asking for 640x360 instead of 1280x720 saved only 25% of
+capture time (it's mostly a fixed per-frame cost) and lost ~40% of strikes in the benchmark.
+
+Preliminary numbers (1-2 runs per cell, bench.html, M2 Pro; vision ms per camera frame, skipped
+frames count as 0):
+
+| 4x CPU throttle | mean | p95 | frames processed | strikes |
+|---|---:|---:|---:|---:|
+| CPU, no fallback | 6.5-10.0 | 12.7-18.0 | 100% | 58-102 |
+| CPU, fallback | 4.1 | 11.3 | 50% (128x72, every 2nd) | 69 |
+| GPU, no fallback | 6.7-8.1 | 16.0-25.3 | 100% | 79-88 |
+| GPU, fallback | 3.4 | 8.9 | 50% (128x72, every 2nd) | 55 |
+
+```
+npm run bench -- --backends cpu,gpu --throttle 4 --adaptive 8   # fallback on, 8 ms budget
+```

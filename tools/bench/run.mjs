@@ -4,7 +4,7 @@
    show up as tb:vision / tb:capture / tb:bgsub / tb:blobs / tb:learn / tb:track slices.
 
    node tools/bench/run.mjs [--backends cpu,gpu,gpu-async] [--frames 600] [--throttle 1] [--out bench-out]
-                            [--label name] [--headful] [--chrome /path/to/chrome] */
+                            [--label name] [--adaptive [budgetMs]] [--headful] [--chrome /path/to/chrome] */
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -22,7 +22,8 @@ const frames = +args.frames || 600;
 const throttle = +args.throttle || 1;
 const outDir = resolve(args.out || join(ROOT, 'bench-out'));
 const label = args.label ? '-' + args.label : '';
-const extra = args.query ? '&' + args.query : ''; // extra bench.html URL options
+let extra = args.query ? '&' + args.query : ''; // extra bench.html URL options
+if (args.adaptive) extra += '&adaptive' + (args.adaptive === true ? '' : '&budget=' + args.adaptive); // graceful degradation
 
 const CHROME = args.chrome || process.env.CHROME_PATH || [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -82,6 +83,8 @@ console.log(`\nframes=${frames} throttle=${throttle}x   (ms per frame: mean / p5
 for (const r of results) {
   console.log(`\n${r.backend.toUpperCase()}  ${r.renderer}${r.extra ? '  ' + r.extra : ''}`);
   for (const [s, v] of Object.entries(r.stages)) console.log(`  ${s.padEnd(8)} ${f(v.mean)} ${f(v.p50)} ${f(v.p95)}`);
+  const p = r.perFrame;
+  console.log(`  per camera frame (skipped = 0): ${f(p.mean)} ${f(p.p50)} ${f(p.p95)}   processed ${r.processed}/${r.frames}, tips ${r.tips}, strikes ${r.strikes}`);
   console.log(`  trace: ${r.trace}`);
 }
 console.log(`\n${resultsFile}`);

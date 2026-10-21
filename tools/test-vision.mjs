@@ -38,3 +38,23 @@ const fresh = V.createTracker(128, 72);
 fresh.process(frame(128, 72, 200), 0, opts);
 assert.equal(fresh.process(frame(128, 72, 201), 33, opts).tips.length, 0);
 console.log('ok  (control) relearning from scratch loses the hand');
+
+// graceful degradation: over budget -> step down; comfortably under -> step back up, no flapping
+const Q = createRequire(import.meta.url)('../js/quality.js');
+const g = Q.createGovernor({ budgetMs: 8, window: 30 });
+const px = (s) => s.w * s.h;
+const run = (msAtFull, frames) => { // vision cost scales with pixel count
+  const changes = [];
+  for (let i = 0; i < frames; i++) if (g.take()) { const lv = g.record(msAtFull * px(g.settings) / px(Q.LEVELS[0])); if (lv >= 0) changes.push(lv); }
+  return changes;
+};
+assert.deepEqual(run(4, 300), [], 'fast device stays at full quality');
+const down = run(16, 300); // 16 ms at 256x144 (a slow phone): 192x108 is 9 ms, 160x90 is 6.3 ms
+assert.equal(g.settings.w, 160, `settles at 160x90, got ${g.settings.w} via ${down}`);
+assert.deepEqual(run(16, 600), [], 'stays put while the load is unchanged');
+run(3, 1200);
+assert.equal(g.level, 0, 'climbs back to full quality once the device is fast again');
+const g2 = Q.createGovernor({ budgetMs: 8 });
+for (let i = 0; i < 400; i++) if (g2.take()) g2.record(40);
+assert.equal(g2.settings.every, 2, 'last resort: skip every other frame');
+console.log('ok  quality governor steps down, holds, recovers, skips frames last');

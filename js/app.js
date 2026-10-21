@@ -17,7 +17,7 @@
     return {
       rows: pre.rows, cols: pre.cols, pads: pre.pads,
       corners: DEFAULT_CORNERS.map((c) => ({ ...c })),
-      flipX: false, flipY: false, locked: false, mode: 'knock', detectV: 2, sens: 6, debug: false, backend: 'auto',
+      flipX: false, flipY: false, locked: false, mode: 'knock', detectV: 2, sens: 6, debug: false, backend: 'auto', adaptive: true,
       bpm: 100, bars: 2, quant: true, metro: true,
       keyRoot: 9, scale: 'Minor pentatonic', preset: 'Mini DJ set', reverb: 0.18, master: 0.9,
     };
@@ -78,7 +78,10 @@
   const video = $('video');
   const stage = $('stage'), sctx = stage.getContext('2d');
   // vision runs on the GPU (WebGL shaders) when it can, else on the CPU; see js/pipeline.js
-  const pipe = pipeline.create({ video, w: PW, h: PH, backend: S.backend, readback: /[?&]readback=async\b/.test(location.search) ? 'async' : 'sync' });
+  // On slow devices vision steps down in resolution (then skips frames) to stay within VISION_BUDGET
+  const VISION_BUDGET = 8; // ms per frame: half a 60 Hz frame, leaving the rest for drawing and audio
+  const pipe = pipeline.create({ video, w: PW, h: PH, backend: S.backend, adaptive: S.adaptive && { budgetMs: VISION_BUDGET },
+    readback: /[?&]readback=async\b/.test(location.search) ? 'async' : 'sync' });
   perf.trace = S.debug || /[?&]trace\b/.test(location.search); // stage timings as User Timing (Perfetto)
   let camOn = false, stream = null;
 
@@ -133,7 +136,8 @@
     if (video.readyState < 2) return;
     const t0 = performance.now();
     const res = pipe.frame(t0, { toGrid, rows: S.rows, cols: S.cols, sens: S.sens }, S.flipX, S.flipY);
-    if (S.mode === 'motion') for (const t of res.strikes) { hit(t.pad); lastTapMark = { x: t.x, y: t.y, t: t0 }; }
+    if (!res) return; // skipped to save time (see js/quality.js)
+    if (S.mode === 'motion') for (const t of res.strikes) { hit(t.pad); lastTapMark = tapMark(t, t0); }
     visMs = visMs * 0.9 + res.ms * 0.1;
   }
 
@@ -143,6 +147,8 @@
      (outAn) and learn how loud that echo is; a mic click must be clearly louder than the echo. */
   let micOn = false, micAn = null, micBuf = null, micStream = null, micTimer = 0, floor = 0.01, lastKnock = 0, micLevel = 0;
   let outAn = null, outBuf = null, outHold = 0, echoGain = 0.5, micEnv = 0, lastTapMark = null;
+  // where a tap landed, in stage pixels (the vision resolution can change in between)
+  const tapMark = (t, now) => ({ x: (t.x + 0.5) * W / pipe.w, y: (t.y + 0.5) * H / pipe.h, t: now });
   async function enableMic() {
     if (micOn) return;
     ensureAudio();
@@ -190,7 +196,7 @@
     if (peak > thr && peak > prevEnv * 1.8 && peak > echoGain * outHold * 1.5 && now - lastKnock > 60) {
       lastKnock = now;
       const tip = pipe.tracker.strikingTip(now, 220);
-      if (tip) { hit(tip.pad); lastTapMark = { x: tip.x, y: tip.y, t: now }; }
+      if (tip) { hit(tip.pad); lastTapMark = tapMark(tip, now); }
     }
   }
 
@@ -351,7 +357,7 @@
       }
     }
     // fingertips the camera sees: this is the spot a tap will land on
-    const sx = W / PW, sy = H / PH;
+    const sx = W / pipe.w, sy = H / pipe.h;
     for (const t of tips) {
       const x = (t.x + 0.5) * sx, y = (t.y + 0.5) * sy, over = t.pad >= 0;
       sctx.beginPath(); sctx.arc(x, y, 9, 0, Math.PI * 2);
@@ -365,14 +371,15 @@
     }
     if (lastTapMark && now - lastTapMark.t < 250) {
       const k = (now - lastTapMark.t) / 250;
-      sctx.beginPath(); sctx.arc((lastTapMark.x + 0.5) * sx, (lastTapMark.y + 0.5) * sy, 10 + 26 * k, 0, Math.PI * 2);
+      sctx.beginPath(); sctx.arc(lastTapMark.x, lastTapMark.y, 10 + 26 * k, 0, Math.PI * 2);
       sctx.lineWidth = 3; sctx.strokeStyle = `rgba(255,210,63,${1 - k})`; sctx.stroke();
     }
     if (S.debug && camOn) {
       sctx.font = '12px ui-monospace, monospace'; sctx.textAlign = 'left'; sctx.textBaseline = 'bottom';
       const st = (k) => { const v = perf.stats(k); return v ? `${k} ${v.p50.toFixed(2)}/${v.p95.toFixed(2)}` : ''; };
       const lines = [
-        `vision ${visMs.toFixed(1)} ms on ${pipe.backend.toUpperCase()} · tips ${tips.length}` + (micOn ? ` · echo ${echoGain.toFixed(2)}` : ''),
+        `vision ${visMs.toFixed(1)} ms on ${pipe.backend.toUpperCase()} at ${pipe.w}x${pipe.h}` + (pipe.quality && pipe.quality.every > 1 ? ', every 2nd frame' : '')
+          + ` · tips ${tips.length}` + (micOn ? ` · echo ${echoGain.toFixed(2)}` : ''),
         'p50/p95 ms: ' + ['vision', 'capture', 'bgsub', 'blobs', 'learn', 'track'].map(st).filter(Boolean).join(' · '),
       ];
       lines.forEach((info, k) => {
@@ -623,7 +630,7 @@
     $('rowsIn').value = S.rows; $('colsIn').value = S.cols;
     $('flipX').checked = S.flipX; $('flipY').checked = S.flipY; $('lockGrid').checked = S.locked;
     $('modeMotion').checked = S.mode === 'motion'; $('modeKnock').checked = S.mode === 'knock';
-    $('sens').value = S.sens; $('debug').checked = S.debug; $('backendSel').value = S.backend;
+    $('sens').value = S.sens; $('debug').checked = S.debug; $('backendSel').value = S.backend; $('adaptive').checked = S.adaptive;
     $('backendInfo').textContent = 'Running on: ' + pipe.renderer;
     $('micRow').hidden = S.mode !== 'knock';
     $('bpm').value = S.bpm; $('bpmVal').textContent = S.bpm; $('bars').value = S.bars;
@@ -664,6 +671,7 @@
   on('modeMotion', 'change', () => setMode('motion')); on('modeKnock', 'change', () => setMode('knock'));
   on('sens', 'input', () => { S.sens = +$('sens').value; save(); });
   on('debug', 'change', () => { S.debug = $('debug').checked; perf.trace = S.debug; save(); });
+  on('adaptive', 'change', () => { S.adaptive = $('adaptive').checked; pipe.setAdaptive(S.adaptive && { budgetMs: VISION_BUDGET }); save(); });
   on('backendSel', 'change', () => { S.backend = $('backendSel').value; pipe.setBackend(S.backend); syncUI(); save(); });
   on('resetBg', 'click', () => pipe.reset());
 

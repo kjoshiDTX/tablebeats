@@ -1,0 +1,73 @@
+# Vision performance check: benchmarks this commit and the one it's compared against on the same
+# runner (interleaved, 3 runs each), then tools/perf_agent/agent.py reads the Chrome traces with
+# Perfetto, names the slowest stage, and fails the job if per-frame vision time regressed.
+# Set the ANTHROPIC_API_KEY secret to add Claude's written analysis to the job summary.
+name: perf
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+      - id: chrome
+        uses: browser-actions/setup-chrome@v1
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Pick the base commit
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then BASE="${{ github.event.pull_request.base.sha }}"; else BASE="${{ github.event.before }}"; fi
+          # no base, or a base from before the benchmark existed: analyse head only
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE:bench.html" 2>/dev/null; then BASE=""; fi
+          echo "BASE=$BASE" >> "$GITHUB_ENV"
+          if [ -n "$BASE" ]; then git worktree add --detach "$RUNNER_TEMP/base" "$BASE"; fi
+          echo "base: ${BASE:-none}"
+
+      - name: Benchmark base and head (interleaved)
+        env:
+          CHROME_PATH: ${{ steps.chrome.outputs.chrome-path }}
+        run: |
+          for i in 1 2 3; do
+            if [ -n "$BASE" ]; then
+              node tools/bench/run.mjs --root "$RUNNER_TEMP/base" --backends cpu,gpu --frames 400 --label r$i --out perf/base
+            fi
+            node tools/bench/run.mjs --backends cpu,gpu --frames 400 --label r$i --out perf/head
+          done
+
+      - name: Analyse traces
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          base=(); if [ -n "$BASE" ]; then base=(--base perf/base/trace-*.json); fi
+          uv run tools/perf_agent/agent.py --head perf/head/trace-*.json "${base[@]}" --report perf/report.md
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-traces
+          path: perf/
+          retention-days: 7

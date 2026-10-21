@@ -84,16 +84,62 @@ relearned as background. It steps back up only when the level above is predicted
 Not on the ladder: camera resolution. Asking for 640x360 instead of 1280x720 saved only 25% of
 capture time (it's mostly a fixed per-frame cost) and lost ~40% of strikes in the benchmark.
 
-Preliminary numbers (1-2 runs per cell, bench.html, M2 Pro; vision ms per camera frame, skipped
-frames count as 0):
+Median of 2 runs x 600 frames per cell (bench.html, M2 Pro). Vision ms per camera frame, skipped
+frames count as 0; strikes = taps detected in the same synthetic scene:
 
-| 4x CPU throttle | mean | p95 | frames processed | strikes |
+| CPU backend | mean | p95 | frames processed | strikes |
 |---|---:|---:|---:|---:|
-| CPU, no fallback | 6.5-10.0 | 12.7-18.0 | 100% | 58-102 |
-| CPU, fallback | 4.1 | 11.3 | 50% (128x72, every 2nd) | 69 |
-| GPU, no fallback | 6.7-8.1 | 16.0-25.3 | 100% | 79-88 |
-| GPU, fallback | 3.4 | 8.9 | 50% (128x72, every 2nd) | 55 |
+| 1x, no fallback | 2.83 | 4.69 | 100% | 38-48 |
+| 1x, fallback | 2.38 | 4.18 | 100% (mostly 192x108) | 49-60 |
+| 4x, no fallback | 8.26 | 15.3 | 100% | 58-102 |
+| 4x, fallback | **4.12** | **10.1** | 55% (mostly 128x72, every 2nd) | 62-69 |
+| 6x, no fallback | 9.71 | 18.2 | 100% | 83-94 |
+| 6x, fallback | **4.68** | **11.2** | 50% (128x72, every 2nd) | 63-73 |
+
+On a throttled CPU the fallback halves the mean and cuts p95 by 35-40%. Most of that comes from
+skipping frames: processing at 128x72 instead of 256x144 saves less than you'd think, because
+getting the frame (capture) costs the same at any processing size. Skipping costs ~25% of strikes
+in Camera-only mode; Tap mode times taps from the mic, so there it only makes the fingertip
+position update less often. The GPU backend improves too (6x p95 32 -> 20 ms) but its p95 is
+dominated by readback stalls that vary a lot from run to run on this machine (16-38 ms).
 
 ```
 npm run bench -- --backends cpu,gpu --throttle 4 --adaptive 8   # fallback on, 8 ms budget
 ```
+
+## Performance agent and CI regression check
+
+`tools/perf_agent/agent.py` is a LangGraph agent that reads the benchmark's Chrome traces with
+Perfetto's trace processor:
+
+```
+measure -> compare -> analyst <-> tools -> report
+```
+
+- **measure**: per-stage frame times from the `tb:*` slices; names the slowest stage per backend.
+- **compare** (when given a base commit's traces): for each stage, the change in p50 and p95 with
+  a 95% bootstrap interval. The bootstrap resamples whole runs, then frames within each run, since
+  frames of one run share its conditions. A stage regresses only when the entire interval is
+  above +10% (p50) or +20% (p95) and it got at least 0.1 ms slower, so noise alone can't fail a
+  build. The verdict comes from this step, never from the model.
+- **analyst**: Claude (`claude-opus-5-5`, Anthropic SDK) with read-only tools over the traces: stage
+  table, slowest frames with their stage breakdown, what Chrome's threads were doing during a frame,
+  and raw Perfetto SQL. It writes the explanation: which stage, spread or spikes, likely cause.
+  Skipped when there are no Anthropic credentials (or `--no-llm`).
+- **report**: Markdown table + analysis, to stdout, `--report file` and the GitHub job summary.
+  Exit status 1 when any stage regressed. Tested on 3+3 runs: identical code passed (GPU vision
+  moved +16% from run-to-run noise, inside its interval); a 0.5 ms busy-wait injected into
+  `blobs` was flagged as +902% p50 on both backends and nothing else was.
+
+```
+uv run tools/perf_agent/agent.py --head bench-out/trace-*.json            # bottleneck only
+uv run tools/perf_agent/agent.py --base old/trace-*.json --head new/trace-*.json --report perf.md
+uv run tools/perf_agent/test_agent.py bench-out/trace-cpu.json           # graph test, stubbed Claude
+```
+
+`.github/workflows/perf.yml` runs this on every push to main and every pull request: it benchmarks
+the base commit and the new one on the same runner (3 interleaved runs each, CPU and GPU backends),
+runs the agent, uploads the traces, and fails the job on a regression. Add an `ANTHROPIC_API_KEY`
+repository secret to get Claude's analysis in the job summary. CI runners have no GPU, so the GPU
+backend runs on SwiftShader there: it still catches regressions in that code path, but its
+absolute numbers say nothing about real devices.

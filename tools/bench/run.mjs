@@ -4,7 +4,8 @@
    show up as tb:vision / tb:capture / tb:bgsub / tb:blobs / tb:learn / tb:track slices.
 
    node tools/bench/run.mjs [--backends cpu,gpu,gpu-async] [--frames 600] [--throttle 1] [--out bench-out]
-                            [--label name] [--adaptive [budgetMs]] [--headful] [--chrome /path/to/chrome] */
+                            [--label name] [--adaptive [budgetMs]] [--headful] [--chrome /path/to/chrome]
+                            [--root dir]   (serve the app from another checkout, e.g. the base commit in CI) */
 import { createServer } from 'node:http';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -12,11 +13,11 @@ import { extname, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const args = Object.fromEntries(process.argv.slice(2).reduce((a, x, i, all) => {
   if (x.startsWith('--')) a.push([x.slice(2), all[i + 1] && !all[i + 1].startsWith('--') ? all[i + 1] : true]);
   return a;
 }, []));
+const ROOT = resolve(args.root || join(dirname(fileURLToPath(import.meta.url)), '../..'));
 const backends = String(args.backends || 'cpu,gpu,gpu-async').split(',');
 const frames = +args.frames || 600;
 const throttle = +args.throttle || 1;
@@ -48,8 +49,10 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: !args.headful,
-  args: ['--autoplay-policy=no-user-gesture-required', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--no-first-run'],
+  args: ['--autoplay-policy=no-user-gesture-required', '--ignore-gpu-blocklist', '--enable-unsafe-swiftshader', '--no-first-run',
+    ...(process.env.CI ? ['--no-sandbox'] : [])], // CI runners (Ubuntu 24.04) block Chrome's user-namespace sandbox
   defaultViewport: { width: 1100, height: 900 },
+  protocolTimeout: 15 * 60e3, // a throttled run plus writing a 40 MB trace takes minutes; the 3 min default killed 6x runs
 });
 
 const CATEGORIES = ['blink.user_timing', 'devtools.timeline', 'toplevel', 'v8.execute', 'gpu'];

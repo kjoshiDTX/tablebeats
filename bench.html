@@ -20,9 +20,9 @@
 <div class="bench">
   <p class="hint">A synthetic camera feed (two arms tapping on a textured table, with shadows and sensor noise) is
     streamed into a &lt;video&gt; element and run through the same pipeline as the app. URL options:
-    <code>?backend=cpu|gpu|gpu-async</code>, <code>frames=600</code>, <code>run</code> (start immediately).</p>
+    <code>?backend=cpu|wasm|gpu|gpu-async</code>, <code>frames=600</code>, <code>run</code> (start immediately).</p>
   <div class="row">
-    <button id="runBtn" class="primary">Run CPU, GPU, GPU (async readback)</button>
+    <button id="runBtn" class="primary">Run JS, WebAssembly, GPU, GPU (async readback)</button>
     <label class="inline">Frames <input id="framesIn" type="number" value="600" min="60" step="60" style="width:90px"></label>
     <span id="status" class="status"></span>
   </div>
@@ -35,6 +35,7 @@
 <script src="js/perf.js"></script>
 <script src="js/quality.js"></script>
 <script src="js/gpu.js"></script>
+<script src="js/wasm.js"></script>
 <script src="js/pipeline.js"></script>
 <script src="js/bench.js"></script>
 </body>

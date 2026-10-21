@@ -107,6 +107,51 @@ dominated by readback stalls that vary a lot from run to run on this machine (16
 npm run bench -- --backends cpu,gpu --throttle 4 --adaptive 8   # fallback on, 8 ms budget
 ```
 
+## The tracker in C++ (WebAssembly)
+
+`native/tracker.cpp` is the tracker (background subtraction, shadow rejection, denoise, blob
+labelling, background learning, fingertips, tracking, strike detection) ported line for line from
+js/vision.js and compiled to a 9 KB WebAssembly module, `js/tracker.wasm`. Pick *CPU (WebAssembly,
+C++)* under *Vision runs on*; Auto tries GPU, then WebAssembly, then JavaScript.
+
+- **Same output as the JS tracker, bit for bit.** Doubles wherever JS uses numbers, float32
+  wherever JS keeps a Float32Array, stable sorts, JS's `Math.round`, and `Math.exp`/`Math.hypot`
+  imported from the JS engine so libm can't differ in the last bit. `npm test` runs both trackers
+  on 400 frames (perspective grid, two arms, a hand not touching the edge, a lighting jump that
+  forces a relearn, a resolution switch) and compares every track field and every strike.
+  Mutants (a changed shadow threshold, a changed arm-entry rate) fail it.
+- **No change for users while it loads.** The app starts on the JS tracker; the module loads in the
+  background and takes over between two frames, keeping the learned background. If it can't load,
+  or the GPU/WebAssembly tracker throws (e.g. a browser cache serving app files of different
+  versions, which really happened while testing this), the JS tracker carries on and at most one
+  frame is lost. The camera loop schedules its next frame before processing, so one bad frame can
+  never stop tracking.
+- **Build:** `tools/build-wasm.sh` (Zig's clang via `uv`, nothing to install;
+  `-target wasm32-freestanding`, no libc). The .wasm is committed, so the app still needs no build;
+  CI rebuilds it and fails if the committed file doesn't match the C++.
+
+Median of 3 runs x 600 frames (bench.html, M2 Pro). "tracker" is everything after getting the
+camera frame (identical code for both), including copying the frame into WebAssembly memory
+(5 us):
+
+| ms per frame | JS tracker p50 | Wasm p50 | JS p95 | Wasm p95 |
+|---|---:|---:|---:|---:|
+| 1x | 0.520 | **0.390** (-25%) | 1.46 | **0.97** (-34%) |
+| 4x CPU throttle | 2.58 | **1.90** (-26%) | 7.13 | **4.65** (-35%) |
+| 6x CPU throttle | 3.54 | **2.84** (-20%) | 7.73 | 7.10 |
+
+By stage (1x, p50): background learning 0.205 -> 0.110 ms, blobs 0.060 -> 0.050, tracking
+0.025 -> 0.010, background subtraction 0.180 -> 0.155 (V8's JIT already does well on that loop).
+The whole frame improves less (p50 2.10 -> 2.00 ms) because getting the frame from the camera is
+most of it, and that's the same code either way. A `-msimd128` build gave identical output and no
+speedup (the per-pixel branches don't vectorise), so the shipped build is scalar and runs on more
+browsers.
+
+```
+tools/build-wasm.sh                                    # after editing native/tracker.cpp
+npm run bench -- --backends cpu,wasm --throttle 4
+```
+
 ## Performance agent and CI regression check
 
 `tools/perf_agent/agent.py` is a LangGraph agent that reads the benchmark's Chrome traces with

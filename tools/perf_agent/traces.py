@@ -17,7 +17,8 @@ from pathlib import Path
 
 from perfetto.trace_processor import TraceProcessor
 
-STAGES = ["vision", "capture", "bgsub", "blobs", "learn", "track"]
+STAGES = ["vision", "capture", "tracker", "copy", "bgsub", "blobs", "learn", "track"]
+TOTALS = {"vision", "tracker"}  # sums of other stages, not stages of their own
 
 # frames before the bench's "bench:measure" mark are warmup
 MEASURED = """

@@ -63,8 +63,8 @@ def measure(state: State) -> State:
     tables = {"head": {b: t.stage_table() for b, t in state["head"].items()}}
     if state.get("base"):
         tables["base"] = {b: t.stage_table() for b, t in state["base"].items()}
-    # slowest stage = the biggest mean share of a frame, not counting the "vision" total itself
-    bottleneck = {b: max((s for s in tab if s != "vision"), key=lambda s: tab[s]["mean"])
+    # slowest stage = the biggest mean share of a frame, not counting the totals
+    bottleneck = {b: max((s for s in tab if s not in T.TOTALS), key=lambda s: tab[s]["mean"])
                   for b, tab in tables["head"].items()}
     return {"tables": tables, "bottleneck": bottleneck}
 
@@ -130,9 +130,11 @@ TOOLS = [
 SYSTEM = """You analyse performance traces of TableBeats, a browser app that tracks fingertips in a
 camera feed. Each camera frame runs a vision pipeline whose stages are recorded as trace slices:
 capture (get the frame: canvas drawImage+getImageData on CPU, texture upload + downscale shader on
-GPU), bgsub (background subtraction; on the GPU backend this includes the readPixels stall waiting
-for the GPU), blobs (connected components), learn (background model update), track (fingertip
-tracking and strike detection); vision is the whole frame. Backends: cpu, gpu, gpu-async.
+GPU), copy (wasm only: the frame into WebAssembly memory), bgsub (background subtraction; on the GPU
+backend this includes the readPixels stall waiting for the GPU), blobs (connected components),
+learn (background model update), track (fingertip tracking and strike detection); tracker is
+everything after capture and vision is the whole frame. Backends: cpu (JavaScript tracker), wasm
+(the same tracker in C++ compiled to WebAssembly), gpu, gpu-async.
 
 You get the deterministic results (stage tables, and if there is a base commit, a bootstrap
 comparison per stage). Use the tools to look at the traces themselves before concluding: check

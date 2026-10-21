@@ -7,7 +7,7 @@
   const $ = (id) => document.getElementById(id);
   const q = new URLSearchParams(location.search);
   const PW = 256, PH = 144, SW = 1280, SH = 720, WARMUP = 60;
-  const STAGES = ['vision', 'capture', 'bgsub', 'blobs', 'learn', 'track'];
+  const STAGES = ['vision', 'capture', 'tracker', 'copy', 'bgsub', 'blobs', 'learn', 'track'];
 
   /* ---------- synthetic camera ---------- */
   /* CPU-backed on purpose (and so are the canvases drawn into it): captureStream() of a GPU canvas reads every frame back on the GPU
@@ -84,7 +84,8 @@
   async function run(backend, frames) {
     await startVideo();
     perf.trace = true;
-    const [be, readback] = backend.split('-'); // cpu | gpu | gpu-async
+    const [be, readback] = backend.split('-'); // cpu | wasm | gpu | gpu-async
+    if (be === 'wasm' && !(await TB.wasm.load('js/tracker.wasm'))) throw new Error('tracker.wasm did not load');
     // ?adaptive[&budget=8]: graceful degradation on (js/quality.js)
     const adaptive = q.has('adaptive') && q.get('adaptive') !== '0' && { budgetMs: +q.get('budget') || 8 };
     const pipe = pipeline.create({ video, w: PW, h: PH, backend: be, readback, adaptive });
@@ -142,12 +143,15 @@
   async function runAll(list) {
     const frames = +q.get('frames') || +$('framesIn').value || 600;
     $('runBtn').disabled = true;
-    for (const b of list) window.__bench.results.push(await run(b, frames));
-    $('status').textContent = 'done';
+    for (const b of list) {
+      try { window.__bench.results.push(await run(b, frames)); }
+      catch (e) { window.__bench.error = `${b}: ${e.message}`; $('status').textContent = window.__bench.error; } // never hang the runner
+    }
+    if (!window.__bench.error) $('status').textContent = 'done';
     $('runBtn').disabled = false;
     window.__bench.done = true;
   }
-  const ALL = ['cpu', 'gpu', 'gpu-async'];
+  const ALL = ['cpu', 'wasm', 'gpu', 'gpu-async'];
   $('runBtn').onclick = () => runAll(ALL);
   if (q.has('run')) runAll(q.get('backend') ? [q.get('backend')] : ALL);
 })();

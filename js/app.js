@@ -80,7 +80,7 @@
   // vision runs on the GPU (WebGL shaders) when it can, else on the CPU; see js/pipeline.js
   // On slow devices vision steps down in resolution (then skips frames) to stay within VISION_BUDGET
   const VISION_BUDGET = 8; // ms per frame: half a 60 Hz frame, leaving the rest for drawing and audio
-  const pipe = pipeline.create({ video, w: PW, h: PH, backend: S.backend, adaptive: S.adaptive && { budgetMs: VISION_BUDGET },
+  const pipe = pipeline.create({ video, w: PW, h: PH, backend: S.backend, adaptive: S.adaptive && { budgetMs: VISION_BUDGET }, onchange: () => syncUI(),
     readback: /[?&]readback=async\b/.test(location.search) ? 'async' : 'sync' });
   perf.trace = S.debug || /[?&]trace\b/.test(location.search); // stage timings as User Timing (Perfetto)
   let camOn = false, stream = null;
@@ -123,10 +123,11 @@
     if (visionLoopOn) return;
     visionLoopOn = true;
     if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-      const cb = (now) => { if (camOn) vision(now); video.requestVideoFrameCallback(cb); };
+      // ask for the next frame first: an error in one frame must never stop tracking for good
+      const cb = (now) => { video.requestVideoFrameCallback(cb); if (camOn) vision(now); };
       video.requestVideoFrameCallback(cb);
     } else {
-      const loop = () => { if (camOn && video.readyState >= 2) vision(performance.now()); requestAnimationFrame(loop); };
+      const loop = () => { requestAnimationFrame(loop); if (camOn && video.readyState >= 2) vision(performance.now()); };
       requestAnimationFrame(loop);
     }
   }

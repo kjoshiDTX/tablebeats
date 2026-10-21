@@ -3,11 +3,11 @@
    The traces open directly in https://ui.perfetto.dev (Open trace file), where the pipeline stages
    show up as tb:vision / tb:capture / tb:bgsub / tb:blobs / tb:learn / tb:track slices.
 
-   node tools/bench/run.mjs [--backends cpu,gpu,gpu-async] [--frames 600] [--throttle 1] [--out bench-out]
+   node tools/bench/run.mjs [--backends cpu,wasm,gpu,gpu-async] [--frames 600] [--throttle 1] [--out bench-out]
                             [--label name] [--adaptive [budgetMs]] [--headful] [--chrome /path/to/chrome]
                             [--root dir]   (serve the app from another checkout, e.g. the base commit in CI) */
 import { createServer } from 'node:http';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,7 @@ const args = Object.fromEntries(process.argv.slice(2).reduce((a, x, i, all) => {
   return a;
 }, []));
 const ROOT = resolve(args.root || join(dirname(fileURLToPath(import.meta.url)), '../..'));
-const backends = String(args.backends || 'cpu,gpu,gpu-async').split(',');
+const backends = String(args.backends || 'cpu,wasm,gpu,gpu-async').split(',');
 const frames = +args.frames || 600;
 const throttle = +args.throttle || 1;
 const outDir = resolve(args.out || join(ROOT, 'bench-out'));
@@ -32,7 +32,7 @@ const CHROME = args.chrome || process.env.CHROME_PATH || [
 ].find(existsSync);
 if (!CHROME) { console.error('Chrome not found: pass --chrome or set CHROME_PATH'); process.exit(2); }
 
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.wasm': 'application/wasm' };
 const server = createServer(async (req, res) => {
   const path = join(ROOT, decodeURIComponent(new URL(req.url, 'http://x').pathname));
   if (!path.startsWith(ROOT)) { res.writeHead(403).end(); return; }
@@ -69,10 +69,17 @@ try {
     await page.goto(`${base}/bench.html?run&backend=${backend}&frames=${frames}${extra}`);
     await page.waitForFunction('window.__bench && window.__bench.done', { timeout: 0, polling: 500 });
     await page.tracing.stop();
-    const [r] = await page.evaluate(() => window.__bench.results);
+    const { results: [r], error } = await page.evaluate(() => window.__bench);
+    await page.close();
+    // e.g. an older commit (the CI base) without this backend: it ran something else, or nothing
+    const ran = r && r.backend.split(' ')[0], wanted = backend.split('-')[0];
+    if (error || ran !== wanted) {
+      console.error(`skipping ${backend}: ${error || `the page ran ${r.backend} instead`}`);
+      await rm(trace, { force: true });
+      continue;
+    }
     Object.assign(r, { requested: backend, throttle, trace });
     results.push(r);
-    await page.close();
   }
 } finally {
   await browser.close();

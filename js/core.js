@@ -55,7 +55,9 @@
     const A = e - f * h, B = c * h - b, C = b * f - c * e;
     const D = f * g - d, E = a - c * g, F = c * d - a * f;
     const G = d * h - e * g, Hh = b * g - a * h, I = a * e - b * d;
-    return (x, y) => { const w = G * x + Hh * y + I; return [(A * x + B * y + C) / w, (D * x + E * y + F) / w]; };
+    const map = (x, y) => { const w = G * x + Hh * y + I; return [(A * x + B * y + C) / w, (D * x + E * y + F) / w]; };
+    map.coef = [A, B, C, D, E, F, G, Hh, I]; // the same map for the WebAssembly tracker (js/wasm.js)
+    return map;
   }
 
   // Four corners (TL,TR,BR,BL) of the pad at row r, col c.
